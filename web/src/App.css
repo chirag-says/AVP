@@ -1,0 +1,75 @@
+/* Orb-only styles. Everything else on this page is Tailwind/shadcn — this file
+   deliberately declares no bare element selectors (it used to style `button`
+   and `body` globally, which bled into every shadcn component). */
+
+.orb-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+}
+
+.orb-button {
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: 50%;
+  line-height: 0;
+  cursor: pointer;
+}
+
+.orb-button:disabled {
+  cursor: wait;
+}
+
+.orb-button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 6px;
+}
+
+/* VoiceOrb's animation loop writes --level here (0..1) each frame. Everything
+   below reads from it, so the whole reaction is one property write per frame. */
+.orb-shell {
+  --level: 0;
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.orb-shell > * {
+  grid-area: 1 / 1;
+}
+
+.orb-glow {
+  width: 220px;
+  height: 220px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(120, 130, 255, 0.55), transparent 70%);
+  /* Blurred once, statically — only opacity/scale change per frame, both of
+     which the compositor handles without re-running the filter. */
+  filter: blur(26px);
+  opacity: calc(0.15 + var(--level) * 0.85);
+  transform: scale(calc(1.05 + var(--level) * 0.35));
+}
+
+.orb-visual {
+  transform: scale(calc(1 + var(--level) * 0.14));
+}
+
+/* Idle keeps a slow breath so the orb never looks frozen/broken; speech takes
+   over the moment a level arrives. */
+.orb-button:not(.bot):not(.user) .orb-visual {
+  animation: orb-breathe 5s ease-in-out infinite;
+}
+
+@keyframes orb-breathe {
+  50% {
+    transform: scale(1.03);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb-button .orb-visual {
+    animation: none;
+  }
+}

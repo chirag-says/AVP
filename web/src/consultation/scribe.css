@@ -1,0 +1,193 @@
+/* Consultation Scribe — page-scoped styling.
+ *
+ * Layout and primitives come from Tailwind + the shared shadcn tokens in
+ * index.css. This file owns only the bespoke iOS-flavoured bits: translucent
+ * materials, spring-timed motion, press feedback, and the listening visual.
+ * Everything here is namespaced under .scribe so it can never leak into the
+ * chatbot's page. */
+
+.scribe {
+  /* A calm, clinical accent distinct from the chatbot's Siri pink/green. */
+  --accent: oklch(0.62 0.12 210);
+  --accent-soft: oklch(0.62 0.12 210 / 0.12);
+  --live: oklch(0.62 0.2 25);
+
+  min-height: 100svh;
+  min-height: 100dvh;
+  position: relative;
+  isolation: isolate;
+}
+
+/* Ambient wash behind everything — barely-there, brightens while listening.
+ * Large, slow, and low-contrast so it reads as atmosphere, not motion. */
+.scribe-ambient {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(60% 50% at 50% 0%, var(--accent-soft), transparent 70%);
+  opacity: 0.5;
+  transition: opacity 800ms ease;
+}
+.scribe[data-listening="true"] .scribe-ambient {
+  opacity: 1;
+}
+
+/* Translucent chrome: content scrolls under it, a bright top edge catches light.
+ * (§12 materials — a floating layer, not an opaque strip.) */
+.scribe-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: color-mix(in oklch, var(--background) 72%, transparent);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 60%, transparent);
+}
+
+/* --- The listening orb ------------------------------------------------- */
+
+.orb-wrap {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 240px;
+  height: 240px;
+}
+
+/* Concentric pulse rings — a small input (a level) telegraphed outward. They
+ * ride --level (0..1) so louder speech pushes them wider and brighter. */
+.orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--accent);
+  opacity: 0;
+}
+.scribe[data-listening="true"] .orb-ring {
+  animation: orb-pulse 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  opacity: calc(0.12 + var(--level, 0) * 0.5);
+}
+.scribe[data-listening="true"] .orb-ring:nth-child(2) {
+  animation-delay: 0.9s;
+}
+.scribe[data-listening="true"] .orb-ring:nth-child(3) {
+  animation-delay: 1.8s;
+}
+@keyframes orb-pulse {
+  0% {
+    transform: scale(0.72);
+    opacity: 0;
+  }
+  30% {
+    opacity: calc(0.1 + var(--level, 0) * 0.4);
+  }
+  100% {
+    transform: scale(calc(1.05 + var(--level, 0) * 0.25));
+    opacity: 0;
+  }
+}
+
+/* The orb itself breathes with the mic level via a compositor-only transform. */
+.orb-core {
+  transform: scale(calc(1 + var(--level, 0) * 0.06));
+  transition: transform 120ms ease-out;
+  will-change: transform;
+}
+
+/* --- Press feedback (§1) ------------------------------------------------ */
+/* Feedback on pointer-down, snappy settle. Applied to the primary actions. */
+.press {
+  transition:
+    transform 140ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 140ms ease,
+    background-color 140ms ease,
+    opacity 140ms ease;
+}
+.press:active {
+  transform: scale(0.97);
+}
+
+/* --- Transcript segments ----------------------------------------------- */
+.seg-enter {
+  animation: seg-in 340ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes seg-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* --- View cross-fade (§7 — gentle, symmetric) -------------------------- */
+.view-enter {
+  animation: view-in 380ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes view-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.995);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* The soft live pulse on the recording dot / timer. */
+.live-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--live);
+  box-shadow: 0 0 0 0 color-mix(in oklch, var(--live) 60%, transparent);
+  animation: live 1.8s ease-out infinite;
+}
+@keyframes live {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in oklch, var(--live) 55%, transparent);
+  }
+  70% {
+    box-shadow: 0 0 0 10px transparent;
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+/* --- Accessibility (§14) ----------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  .orb-ring,
+  .live-dot {
+    animation: none !important;
+  }
+  .orb-core {
+    transform: none !important;
+  }
+  .seg-enter,
+  .view-enter {
+    animation: view-fade 200ms ease both;
+  }
+  @keyframes view-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  .scribe-ambient {
+    transition: none;
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .scribe-header {
+    background: var(--background);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}

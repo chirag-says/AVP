@@ -1,0 +1,61 @@
+# === Secrets — never commit ===
+# Real keys live in server/.env and .mcp.json (Sarvam / Google / Supabase
+# service-role + access tokens). The .env.example template stays tracked.
+.env
+.env.*
+!.env.example
+!.env.sample
+.mcp.json
+
+# === Python (server/) ===
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+build/
+# Tool caches
+.ruff_cache/
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# === Model weights & generated audio (large binaries) ===
+# kokoro-v1.0.onnx (~325MB) and voices-v1.0.bin are downloaded, not source.
+server/models/*.onnx
+server/models/*.bin
+server/smoke/*.wav
+
+# === Node / frontend (web/) ===
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# === Logs ===
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# === Editor / OS ===
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# === Claude Code local overrides (keep shared config tracked) ===
+.claude/settings.local.json
