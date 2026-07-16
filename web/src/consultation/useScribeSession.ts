@@ -83,8 +83,10 @@ export function useScribeSession(): ScribeSession {
     await clientRef.current?.disconnect();
     clientRef.current = null;
     levelRef.current = 0;
-    // Status is driven by the caller after stop() so it can move straight into
-    // summarizing; we just tear down the connection here.
+    // Drop out of "listening" immediately. Without this the page can fall back
+    // to the live-recording screen (orb + running timer) if summarizing then
+    // fails — looking like it restarted the mic when it hasn't.
+    setStatus("idle");
   }, []);
 
   const reset = useCallback(() => {

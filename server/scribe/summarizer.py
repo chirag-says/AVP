@@ -25,6 +25,12 @@ from google.genai import errors as genai_errors
 # for cost/quota via env, same knob style as bot.py.
 SUMMARY_MODEL = os.getenv("GOOGLE_SUMMARY_MODEL", "gemini-flash-latest")
 
+# Flash-latest throws transient 503s ("high demand") in bursts that can outlast a
+# handful of retries and lose a finished consultation. flash-lite is a lighter,
+# far-more-available model (it's what the intake bot runs on) — fall back to it
+# so a busy primary degrades to a slightly simpler note instead of no note.
+FALLBACK_MODEL = os.getenv("GOOGLE_SUMMARY_FALLBACK_MODEL", "gemini-flash-lite-latest")
+
 # The exact shape scribe_bot.py stores and ConsultationScribe.tsx renders. Kept
 # here as the single source of truth; the prompt reproduces it verbatim so the
 # model's keys can never drift from the reader's expectations.
@@ -95,12 +101,14 @@ def _extract_json(text: str) -> dict:
     return obj
 
 
-def summarize(transcript: list[dict]) -> dict:
+def summarize(transcript: list[dict]) -> tuple[dict, str]:
     """Summarise an ordered list of {text, ...} utterance segments.
 
-    Returns the structured note as a dict matching _SCHEMA. Raises on an empty
-    transcript or an unparseable model reply — the caller turns those into a
-    clean HTTP error rather than storing a broken note.
+    Returns (note, model_used) — the structured note matching _SCHEMA, and which
+    model actually produced it (primary or fallback), so the stored record is
+    honest about that. Raises on an empty transcript, an unparseable reply, or
+    every model being unavailable — the caller turns those into a clean HTTP
+    error rather than storing a broken note.
     """
     segments = [str(s.get("text", "")).strip() for s in transcript]
     body = "\n".join(f"{i + 1}. {t}" for i, t in enumerate(segments) if t)
@@ -117,19 +125,32 @@ def summarize(transcript: list[dict]) -> dict:
     }
     contents = f"Transcript (one numbered utterance per line):\n\n{body}"
 
-    # The flash models throw a transient 503 ("high demand") often enough that a
-    # single attempt would drop a finished consultation on the floor. Retry the
-    # server-side failures a few times with a short backoff; a 4xx (bad key,
-    # bad request) is not retryable and surfaces immediately.
+    # Two transient failure modes, handled differently:
+    #  - 503 ServerError ("high demand"): retry the same model a couple of times
+    #    with a short backoff.
+    #  - 429 ClientError (RESOURCE_EXHAUSTED): the free tier caps each model at
+    #    ~20 requests/day, and that quota is PER MODEL — so retrying the same
+    #    model is pointless, but the fallback model has its own separate quota.
+    #    Skip straight to it.
+    # Any other 4xx (bad key, bad request) is a real error and surfaces at once.
+    models = [SUMMARY_MODEL]
+    if FALLBACK_MODEL and FALLBACK_MODEL != SUMMARY_MODEL:
+        models.append(FALLBACK_MODEL)
+
     last_exc: Exception | None = None
-    for attempt in range(4):
-        try:
-            resp = client.models.generate_content(
-                model=SUMMARY_MODEL, contents=contents, config=config
-            )
-            return _extract_json(resp.text or "")
-        except genai_errors.ServerError as exc:
-            last_exc = exc
-            if attempt < 3:
-                time.sleep(1.5 * (attempt + 1))
+    for model in models:
+        for attempt in range(2):
+            try:
+                resp = client.models.generate_content(
+                    model=model, contents=contents, config=config
+                )
+                return _extract_json(resp.text or ""), model
+            except genai_errors.ClientError as exc:
+                if getattr(exc, "code", None) == 429:
+                    last_exc = exc
+                    break  # daily quota for this model is gone — try the next model
+                raise
+            except genai_errors.ServerError as exc:
+                last_exc = exc
+                time.sleep(1.0 + attempt)  # 1s, then 2s, before giving up on this model
     raise last_exc  # type: ignore[misc]

@@ -28,8 +28,10 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")
 
 from dotenv import load_dotenv
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import Response
+from google.genai import errors as genai_errors
 from loguru import logger
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -45,7 +47,8 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.workers.runner import WorkerRunner
 from pydantic import BaseModel
 
-from scribe.summarizer import SUMMARY_MODEL, summarize
+from export.exporter import DATASETS, ExportFilters, build_export, list_rows
+from scribe.summarizer import summarize
 from services.consult_db import list_notes, save_note
 
 load_dotenv(pathlib.Path(__file__).resolve().parent / ".env", override=True)
@@ -108,26 +111,64 @@ async def summarize_consultation(req: SummarizeRequest):
 
     try:
         # genai's client is synchronous; keep it off the event loop.
-        summary = await run_in_threadpool(summarize, transcript)
+        summary, model_used = await run_in_threadpool(summarize, transcript)
     except ValueError as exc:
         # Empty/blank transcript — a client error, not a server fault.
         raise HTTPException(status_code=400, detail=str(exc))
-    except Exception:
+    except genai_errors.ClientError as exc:
+        if getattr(exc, "code", None) == 429:
+            # Every model's daily free-tier quota is used up. Say so honestly —
+            # "try again" wording would be misleading, this won't clear for hours.
+            logger.warning("Summary quota exhausted (429)")
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "The Google API key's daily free-tier limit for the summary "
+                    "models is used up (20 requests/day each). Your transcript is "
+                    "kept — try again later, or add billing to the key."
+                ),
+            )
         logger.exception("Consultation summary failed")
         raise HTTPException(status_code=502, detail="Could not generate the summary.")
+    except Exception:
+        logger.exception("Consultation summary failed")
+        raise HTTPException(
+            status_code=502,
+            detail="The summary service is busy right now. Your transcript is kept — try again.",
+        )
 
     note_id = None
     if HAVE_SUPABASE:
         try:
             note_id = await run_in_threadpool(
-                save_note, transcript, summary, req.duration_s, SUMMARY_MODEL
+                save_note, transcript, summary, req.duration_s, model_used
             )
         except Exception:
             # The clinician still gets their note on screen; only the archive
             # copy failed, and that shouldn't 500 the request.
             logger.exception("Saving consultation note failed")
 
-    return {"id": note_id, "summary": summary, "model": SUMMARY_MODEL}
+    return {"id": note_id, "summary": summary, "model": model_used}
+
+
+def _db_http_error(exc: Exception, what: str) -> HTTPException:
+    """Turn a Supabase read failure into a helpful HTTP error.
+
+    The one that actually happens in practice is the consultation_notes table
+    not existing yet (the one-time setup step) — surface that plainly instead of
+    a bare 500 so the UI can guide the clinician.
+    """
+    msg = str(exc)
+    if "consultation_notes" in msg or "PGRST205" in msg or "does not exist" in msg:
+        return HTTPException(
+            status_code=503,
+            detail=(
+                "This data isn't set up yet. Run server/consult_schema.sql once "
+                "in the Supabase SQL editor to enable consultation notes."
+            ),
+        )
+    logger.exception(f"{what} failed")
+    return HTTPException(status_code=500, detail=f"Could not {what}.")
 
 
 @runner_app.get("/api/consultations")
@@ -138,19 +179,84 @@ async def get_consultations():
     try:
         return await run_in_threadpool(list_notes)
     except Exception as exc:
-        msg = str(exc)
-        # The table hasn't been created yet — the one-time setup step. Say so
-        # plainly instead of a bare 500, so the UI can guide the clinician.
-        if "consultation_notes" in msg or "PGRST205" in msg or "does not exist" in msg:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Past notes aren't set up yet. Run server/consult_schema.sql "
-                    "once in the Supabase SQL editor to enable saved notes."
-                ),
-            )
-        logger.exception("Listing consultation notes failed")
-        raise HTTPException(status_code=500, detail="Could not load past notes.")
+        raise _db_http_error(exc, "load past notes")
+
+
+# --- Export API ------------------------------------------------------------
+# Read-only CSV / XLSX export of both patient datasets (intake_sessions and
+# consultation_notes), with date-range / status / selected-row / flag / search
+# filters. Exporting the intake data never writes, so the chatbot is unaffected.
+
+
+def _parse_filters(
+    date_from: str | None,
+    date_to: str | None,
+    status: str | None,
+    ids: str | None,
+    flagged: str | None,
+    search: str | None,
+) -> ExportFilters:
+    return ExportFilters(
+        date_from=date_from or None,
+        date_to=date_to or None,
+        statuses=[s for s in (status or "").split(",") if s],
+        ids=[i for i in (ids or "").split(",") if i],
+        flagged_only=flagged in ("1", "true", "True"),
+        search=(search or "").strip(),
+    )
+
+
+@runner_app.get("/api/export/{dataset}/list")
+async def export_list(
+    dataset: str,
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    status: str | None = None,
+    ids: str | None = None,
+    flagged: str | None = None,
+    q: str | None = None,
+):
+    """Rows matching the current filters, for the picker and the live count."""
+    if dataset not in DATASETS:
+        raise HTTPException(status_code=404, detail=f"unknown dataset '{dataset}'")
+    if not HAVE_SUPABASE:
+        return {"rows": [], "count": 0}
+    filters = _parse_filters(date_from, date_to, status, ids, flagged, q)
+    try:
+        rows = await run_in_threadpool(list_rows, dataset, filters)
+    except Exception as exc:
+        raise _db_http_error(exc, "read the data")
+    return {"rows": rows, "count": len(rows)}
+
+
+@runner_app.get("/api/export/{dataset}")
+async def export_download(
+    dataset: str,
+    format: str = "csv",
+    date_from: str | None = Query(None, alias="from"),
+    date_to: str | None = Query(None, alias="to"),
+    status: str | None = None,
+    ids: str | None = None,
+    flagged: str | None = None,
+    q: str | None = None,
+):
+    """Download a filtered export as CSV or XLSX."""
+    if dataset not in DATASETS:
+        raise HTTPException(status_code=404, detail=f"unknown dataset '{dataset}'")
+    if not HAVE_SUPABASE:
+        raise HTTPException(status_code=503, detail="Database is not configured.")
+    filters = _parse_filters(date_from, date_to, status, ids, flagged, q)
+    try:
+        content, media, filename = await run_in_threadpool(build_export, dataset, filters, format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        raise _db_http_error(exc, "build the export")
+    return Response(
+        content=content,
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # --- Voice pipeline --------------------------------------------------------

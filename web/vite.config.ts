@@ -20,6 +20,7 @@ export default defineConfig({
       input: {
         main: path.resolve(import.meta.dirname, "index.html"),
         consultation: path.resolve(import.meta.dirname, "consultation.html"),
+        export: path.resolve(import.meta.dirname, "export.html"),
       },
     },
   },

@@ -29,6 +29,7 @@ docopt==0.6.2
 docstring_parser==0.18.0
 email-validator==2.3.0
 espeakng-loader==0.2.4
+et-xmlfile==2.0.0
 fastapi==0.139.0
 fastapi-cli==0.0.29
 fastapi-cloud-cli==0.22.2
@@ -82,6 +83,7 @@ numpy==2.4.6
 onnxruntime==1.24.4
 openai==2.45.0
 opencv-python==4.13.0.92
+openpyxl==3.1.5
 packaging==26.2
 phonemizer-fork==3.3.2
 pillow==12.3.0

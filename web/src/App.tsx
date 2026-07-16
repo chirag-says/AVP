@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PipecatClient } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
-import { ScrollText, Stethoscope, VolumeX } from "lucide-react";
+import { Database, ScrollText, Stethoscope, VolumeX } from "lucide-react";
 import Transcript, { type TurnEntry } from "./Transcript";
 import IntakeForm from "./IntakeForm";
 import Records from "./Records";
@@ -190,10 +190,15 @@ export default function App() {
             <Button variant="outline" size="sm" onClick={() => setView(view === "intake" ? "records" : "intake")}>
               {view === "intake" ? "Reception records" : "Back to intake"}
             </Button>
-            {/* Separate page (its own HTML entry), so a real navigation, not the view toggle. */}
+            {/* Separate pages (their own HTML entries), so real navigations, not the view toggle. */}
             <Button asChild variant="outline" size="sm">
               <a href="/consultation.html">
                 <ScrollText /> Consultation scribe
+              </a>
+            </Button>
+            <Button asChild variant="outline" size="sm">
+              <a href="/export.html">
+                <Database /> Export
               </a>
             </Button>
           </span>
