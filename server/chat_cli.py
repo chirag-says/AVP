@@ -70,8 +70,8 @@ def main():
         session_id = create_session()
         print(f"[session {session_id}]")
 
-    print("Bot: Hello! Welcome to the hospital. Could I get your full name, please?")
-    transcript.append({"role": "bot", "text": "Hello! Welcome to the hospital. Could I get your full name, please?"})
+    print("Bot: Hello! Welcome to AVP Hospital. Could I get your full name, please?")
+    transcript.append({"role": "bot", "text": "Hello! Welcome to AVP Hospital. Could I get your full name, please?"})
 
     while True:
         try:

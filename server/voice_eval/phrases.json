@@ -1,0 +1,222 @@
+{
+  "_comment": [
+    "Labelled test set for voice_eval. `say` is what the synthetic patient speaks (spelled out so TTS pronounces it the way a patient would); `ref` is the expected transcript; `terms` are the medical terms scored for term accuracy; `phone` is scored by exact 10-digit match after the intake phone normalizer.",
+    "All content is invented. Never put real patient data in this file.",
+    "kt_* phrases test STT keyterms: `in_list` terms are in server/voice/vocabulary.json (can keyterms help?), `not_in_list` terms sound like list entries (can keyterms substitute the wrong drug?)."
+  ],
+  "patient_voices": [
+    "rahul",
+    "ritu",
+    "amit",
+    "kavya"
+  ],
+  "bot": {
+    "voice": "priya",
+    "pace": 1.3,
+    "say": "Thank you. Could you tell me which medications you are currently taking, and since when?"
+  },
+  "background": {
+    "voice": "kabir",
+    "say": "Did you pay the parking fee at the counter? The canteen closes at four today, so let us go before that. I think the pharmacy line is shorter now."
+  },
+  "phrases": [
+    {
+      "id": "name",
+      "say": "My name is Ramesh Kumar Sharma.",
+      "ref": "my name is ramesh kumar sharma",
+      "terms": []
+    },
+    {
+      "id": "age",
+      "say": "I am forty two years old.",
+      "ref": "i am 42 years old",
+      "terms": []
+    },
+    {
+      "id": "phone",
+      "say": "My mobile number is nine eight four five zero, one two three six seven.",
+      "ref": "my mobile number is 9845012367",
+      "terms": [],
+      "phone": "9845012367"
+    },
+    {
+      "id": "fever",
+      "say": "I have had fever and a dry cough for three days.",
+      "ref": "i have had fever and a dry cough for 3 days",
+      "terms": []
+    },
+    {
+      "id": "metformin",
+      "say": "I take metformin five hundred milligrams twice a day and amlodipine at night.",
+      "ref": "i take metformin 500 milligrams twice a day and amlodipine at night",
+      "terms": [
+        "metformin",
+        "amlodipine"
+      ]
+    },
+    {
+      "id": "allergy",
+      "say": "I am allergic to penicillin and sulfa drugs.",
+      "ref": "i am allergic to penicillin and sulfa drugs",
+      "terms": [
+        "penicillin",
+        "sulfa"
+      ]
+    },
+    {
+      "id": "diabetes",
+      "say": "I have type two diabetes and hypertension.",
+      "ref": "i have type 2 diabetes and hypertension",
+      "terms": [
+        "diabetes",
+        "hypertension"
+      ]
+    },
+    {
+      "id": "statin",
+      "say": "I also take atorvastatin and pantoprazole every morning.",
+      "ref": "i also take atorvastatin and pantoprazole every morning",
+      "terms": [
+        "atorvastatin",
+        "pantoprazole"
+      ]
+    },
+    {
+      "id": "abdomen",
+      "say": "There is pain in my lower abdomen and a burning sensation while passing urine.",
+      "ref": "there is pain in my lower abdomen and a burning sensation while passing urine",
+      "terms": [
+        "abdomen",
+        "burning sensation"
+      ]
+    },
+    {
+      "id": "dob",
+      "say": "My date of birth is fourteenth March, nineteen eighty two.",
+      "ref": "my date of birth is 14 march 1982",
+      "terms": []
+    },
+    {
+      "id": "angioplasty",
+      "say": "I had an angioplasty two years ago and I take clopidogrel daily.",
+      "ref": "i had an angioplasty 2 years ago and i take clopidogrel daily",
+      "terms": [
+        "angioplasty",
+        "clopidogrel"
+      ]
+    },
+    {
+      "id": "asthma",
+      "say": "I have asthma and I use a salbutamol inhaler when I feel breathless.",
+      "ref": "i have asthma and i use a salbutamol inhaler when i feel breathless",
+      "terms": [
+        "asthma",
+        "salbutamol",
+        "inhaler"
+      ]
+    },
+    {
+      "id": "thyroid",
+      "say": "I am on levothyroxine for hypothyroidism and telmisartan for blood pressure.",
+      "ref": "i am on levothyroxine for hypothyroidism and telmisartan for blood pressure",
+      "terms": [
+        "levothyroxine",
+        "hypothyroidism",
+        "telmisartan"
+      ]
+    },
+    {
+      "id": "palpitations",
+      "say": "I have been getting palpitations and giddiness since last week.",
+      "ref": "i have been getting palpitations and giddiness since last week",
+      "terms": [
+        "palpitations",
+        "giddiness"
+      ]
+    },
+    {
+      "id": "codemix",
+      "say": "मुझे तीन दिन से बुखार है और सर में दर्द भी है।",
+      "tts_language": "hi-IN",
+      "ref": null,
+      "terms": [],
+      "qualitative": true
+    },
+    {
+      "id": "kt_brands",
+      "say": "I take Ecosprin seventy five and Thyronorm fifty every morning.",
+      "ref": "i take ecosprin 75 and thyronorm 50 every morning",
+      "terms": [
+        "ecosprin",
+        "thyronorm"
+      ],
+      "keyterm_test": "in_list"
+    },
+    {
+      "id": "kt_gliptin",
+      "say": "My sugar tablets are vildagliptin and glimepiride.",
+      "ref": "my sugar tablets are vildagliptin and glimepiride",
+      "terms": [
+        "vildagliptin",
+        "glimepiride"
+      ],
+      "keyterm_test": "in_list"
+    },
+    {
+      "id": "kt_acidity",
+      "say": "For acidity I take rabeprazole, and ondansetron when I vomit.",
+      "ref": "for acidity i take rabeprazole and ondansetron when i vomit",
+      "terms": [
+        "rabeprazole",
+        "ondansetron"
+      ],
+      "keyterm_test": "in_list"
+    },
+    {
+      "id": "kt_allergy_meds",
+      "say": "I use montelukast and cetirizine for my allergy.",
+      "ref": "i use montelukast and cetirizine for my allergy",
+      "terms": [
+        "montelukast",
+        "cetirizine"
+      ],
+      "keyterm_test": "in_list"
+    },
+    {
+      "id": "kt_clonidine",
+      "say": "I take clonidine for blood pressure.",
+      "ref": "i take clonidine for blood pressure",
+      "terms": [
+        "clonidine"
+      ],
+      "keyterm_test": "not_in_list"
+    },
+    {
+      "id": "kt_amiodarone",
+      "say": "I was given amiodarone for my heart rhythm.",
+      "ref": "i was given amiodarone for my heart rhythm",
+      "terms": [
+        "amiodarone"
+      ],
+      "keyterm_test": "not_in_list"
+    },
+    {
+      "id": "kt_metronidazole",
+      "say": "The doctor gave me metronidazole for a stomach infection.",
+      "ref": "the doctor gave me metronidazole for a stomach infection",
+      "terms": [
+        "metronidazole"
+      ],
+      "keyterm_test": "not_in_list"
+    },
+    {
+      "id": "kt_lamotrigine",
+      "say": "I take lamotrigine for seizures.",
+      "ref": "i take lamotrigine for seizures",
+      "terms": [
+        "lamotrigine"
+      ],
+      "keyterm_test": "not_in_list"
+    }
+  ]
+}

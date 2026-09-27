@@ -1,0 +1,86 @@
+{
+  "_comment": [
+    "Speech-recognition vocabulary (Sarvam `keyterms`). OFF by default (STT_KEYTERMS=false) and only accepted by Sarvam for saaras:v4.",
+    "Why off: in server/voice_eval (validate.py keyterms, 92 trials per config) keyterms caused 7 wrong medical substitutions (4 with the hospital name added) versus 0 without: amiodarone -> amlodipine, glipizide -> glimepiride, clonidine -> clopidogrel, valsartan -> 'AVP Hospital'. A wrong real drug name in a patient record is worse than a misspelling, and no list covers every drug.",
+    "If enabled, prefer site-specific names patients actually say (doctor names, local brands) in a file named by STT_VOCABULARY_EXTRA_FILE, and re-run server/voice_eval/stt_ab.py with look-alike drugs before trusting it. Up to STT_KEYTERM_LIMIT (max 50) terms are sent, categories in the order listed.",
+    "Never put patient data in this file."
+  ],
+  "categories": {
+    "site": [],
+    "medications": [
+      "metformin",
+      "amlodipine",
+      "atorvastatin",
+      "pantoprazole",
+      "telmisartan",
+      "clopidogrel",
+      "levothyroxine",
+      "glimepiride",
+      "salbutamol",
+      "montelukast",
+      "rosuvastatin",
+      "losartan",
+      "omeprazole",
+      "insulin glargine",
+      "sitagliptin",
+      "paracetamol",
+      "azithromycin",
+      "amoxicillin",
+      "cetirizine",
+      "ecosprin",
+      "dolo",
+      "thyronorm",
+      "metoprolol",
+      "furosemide",
+      "prednisolone",
+      "diclofenac",
+      "ondansetron",
+      "rabeprazole",
+      "vildagliptin",
+      "ivermectin"
+    ],
+    "allergens": [
+      "penicillin",
+      "sulfa",
+      "NSAIDs",
+      "aspirin",
+      "iodine contrast"
+    ],
+    "conditions": [
+      "hypertension",
+      "hypothyroidism",
+      "angioplasty",
+      "asthma",
+      "COPD",
+      "tuberculosis",
+      "dengue",
+      "typhoid",
+      "migraine",
+      "arthritis",
+      "hyperthyroidism",
+      "anaemia",
+      "gastritis",
+      "kidney stones",
+      "PCOD"
+    ],
+    "anatomy_and_symptoms": [
+      "abdomen",
+      "palpitations",
+      "breathlessness",
+      "giddiness",
+      "nausea",
+      "urination",
+      "vomiting",
+      "chest pain",
+      "loose motions",
+      "burning sensation"
+    ],
+    "abbreviations": [
+      "BP",
+      "ECG",
+      "HbA1c",
+      "CT scan",
+      "MRI"
+    ]
+  }
+}

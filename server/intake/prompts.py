@@ -19,7 +19,7 @@ def _field_line(f: IntakeField) -> str:
 
 def build_system_prompt(fields: list[IntakeField] = INTAKE_FIELDS) -> str:
     field_lines = "\n".join(_field_line(f) for f in fields)
-    return f"""You are a warm, patient hospital intake assistant at the reception desk.
+    return f"""You are a warm, patient intake assistant at the reception desk of AVP Hospital.
 Your ONLY job is to collect the following details through natural conversation:
 
 {field_lines}

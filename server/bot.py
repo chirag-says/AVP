@@ -22,8 +22,10 @@ if sys.platform == "win32":
 
 from dotenv import load_dotenv
 from loguru import logger
+from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.evals.transport import EvalTransportParams
 from pipecat.frames.frames import EndWorkerFrame, LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -39,18 +41,26 @@ from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.kokoro.tts import KokoroTTSService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.sarvam.llm import SarvamLLMService
-from pipecat.services.sarvam.stt import SarvamSTTService
 from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.services.whisper.stt import WhisperSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.transports.base_transport import BaseTransport, TransportParams
+from pipecat.turns.user_start import TranscriptionUserTurnStartStrategy, VADUserTurnStartStrategy
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
 from intake.engine import IntakeEngine
 from intake.prompts import build_system_prompt
 from services.db import create_session, list_sessions, save_session
+from voice.config import VoiceConfig
+from voice.echo_guard import BotSpeechTracker, EchoAwareVADUserTurnStartStrategy, EchoTranscriptFilter
+from voice.recovery import NoTranscriptRecovery
+from voice.stt import build_sarvam_stt
+from voice.telemetry import VoiceTelemetry, format_mic_table
 
 load_dotenv(pathlib.Path(__file__).resolve().parent / ".env", override=True)
+VOICE = VoiceConfig.from_env()
 
 MODELS_DIR = pathlib.Path(__file__).resolve().parent / "models"
 HAVE_SUPABASE = bool(os.getenv("SUPABASE_URL"))
@@ -83,15 +93,9 @@ def _sarvam_key() -> str:
 
 def _build_stt():
     if STT_PROVIDER == "sarvam":
-        return SarvamSTTService(
-            api_key=_sarvam_key(),
-            settings=SarvamSTTService.Settings(
-                # saaras:v3 is the only model exposing per-connection VAD tuning,
-                # and unlike saaras:v2.5 it transcribes rather than translating.
-                model=os.getenv("SARVAM_STT_MODEL", "saaras:v3"),
-                language=Language.EN_IN,
-            ),
-        )
+        # Model, language, keyterms and Sarvam's server VAD profile come from
+        # VoiceConfig; see server/voice/stt.py for why each default was chosen.
+        return build_sarvam_stt(_sarvam_key(), VOICE)
     # See the WHISPER_DEVICE note below: "auto" detects CUDA and then crashes on
     # Windows without the full Toolkit, so CPU stays the default here too.
     return WhisperSTTService(
@@ -108,9 +112,10 @@ def _build_tts():
         return SarvamTTSService(
             api_key=_sarvam_key(),
             settings=SarvamTTSService.Settings(
-                model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v2"),
-                voice=os.getenv("SARVAM_VOICE_ID", "anushka"),
+                model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v3"),
+                voice=os.getenv("SARVAM_VOICE_ID", "priya"),
                 language=Language.EN_IN,
+                pace=1.3,  # slightly faster speech (v3 range: 0.5–2.0)
             ),
         )
     return KokoroTTSService(
@@ -148,11 +153,18 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     logger.info("Starting hospital intake bot")
 
     engine = IntakeEngine()
-    session_id = create_session() if HAVE_SUPABASE else None
+    session_id = None
+    if HAVE_SUPABASE:
+        try:
+            session_id = create_session()
+        except Exception as e:
+            logger.warning(f"Supabase unavailable, running without persistence: {e}")
     if session_id:
         logger.info(f"Intake session {session_id}")
 
     logger.info(f"Stack: stt={STT_PROVIDER} llm={LLM_PROVIDER} tts={TTS_PROVIDER}")
+    logger.info(f"Voice: echo_guard={VOICE.echo_guard} headset_mode={VOICE.headset_mode} "
+                f"no_transcript_recovery={VOICE.no_transcript_recovery} keyterms={VOICE.stt_keyterms}")
     stt = _build_stt()
     tts = _build_tts()
     llm = _build_llm()
@@ -193,44 +205,106 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)
         ]
         if session_id:
-            save_session(session_id, record, transcript, status="completed")
+            try:
+                save_session(session_id, record, transcript, status="completed")
+            except Exception as e:
+                logger.warning(f"Failed to save completed session: {e}")
         await worker.rtvi.send_server_message({"type": "intake_complete"})
         await params.llm.push_frame(EndWorkerFrame())
+
+    telemetry = VoiceTelemetry(session_label=session_id, scenario=VOICE.debug_scenario) if VOICE.telemetry else None
+    bot_speech = BotSpeechTracker() if VOICE.echo_guard else None
+
+    # Turn-taking, stated explicitly (these were Pipecat's implicit defaults,
+    # except the echo-aware VAD start):
+    #   start: VAD, or a transcript Silero missed (soft speech fallback)
+    #   stop:  Smart Turn v3, a local audio model, decides whether a pause ends
+    #          the turn. VAD alone does NOT end turns; if Smart Turn judges the
+    #          patient mid-sentence it keeps waiting (up to 3 s of silence).
+    vad_start = (
+        EchoAwareVADUserTurnStartStrategy(telemetry=telemetry)
+        if VOICE.echo_guard
+        else VADUserTurnStartStrategy()
+    )
+    turn_strategies = UserTurnStrategies(
+        start=[vad_start, TranscriptionUserTurnStartStrategy()],
+        stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())],
+    )
 
     context = LLMContext(tools=[save_field_tool, finalize_tool])
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
-            # Pipecat's 0.2s stop_secs default assumes a smart-turn analyzer is
-            # deciding end-of-turn; with VAD alone it ends the turn on any
-            # ordinary pause. Intake is full of them — nobody reads out a
-            # 10-digit mobile number without a breath ("98765... 43210"), and
-            # at 0.2s whisper only ever sees half the digits. 0.8s spans a
-            # mid-number pause while still feeling responsive.
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.8)),
+            user_turn_strategies=turn_strategies,
+            # Silero decides *whether someone is speaking*. It is not noise
+            # suppression: audio it calls speech can still carry fan noise or
+            # a bystander, and it never alters what Sarvam receives.
+            #
+            # stop_secs (VAD_STOP_SECS, default 0.2) is when Smart Turn is
+            # asked "is the patient done?". It used to be 0.8 to keep Whisper
+            # from cutting dictated numbers, but with Smart Turn in the loop
+            # 0.8 s of trailing silence biases the model toward "complete"
+            # (the same "My date of birth is..." pause scored p=0.02 at 0.2 s
+            # and p=0.94 at 0.8 s). Measured in server/voice_eval: 0.2 s ends
+            # fewer turns early (3 vs 5 of 12), with the same ~1.1 s median
+            # end-of-turn delay and the same Sarvam accuracy on paused answers
+            # (the extra flushes split segments, which the aggregator rejoins).
+            # The other values are Pipecat's defaults, written out for clarity.
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(
+                confidence=0.7,
+                start_secs=0.2,
+                stop_secs=VOICE.vad_stop_secs,
+                min_volume=0.6,
+            )),
         ),
     )
 
-    pipeline = Pipeline(
-        [
-            transport.input(),
-            stt,
-            user_aggregator,
-            llm,
-            tts,
-            transport.output(),
-            assistant_aggregator,
-        ]
-    )
+    processors = [transport.input(), stt]
+    if VOICE.echo_guard or VOICE.headset_mode:
+        # Between STT and the aggregator: drops transcripts of the bot's own
+        # voice (echo guard) and, on headset kiosks only, any transcript local
+        # VAD did not hear, before they can start a user turn or reach the LLM.
+        processors.append(EchoTranscriptFilter(
+            bot_speech, telemetry=telemetry, echo_rules=VOICE.echo_guard, require_vad=VOICE.headset_mode))
+    if VOICE.no_transcript_recovery:
+        # After the filter, so a dropped transcript does not count as patient text.
+        processors.append(NoTranscriptRecovery(telemetry=telemetry))
+    processors += [user_aggregator, llm, tts, transport.output(), assistant_aggregator]
+    pipeline = Pipeline(processors)
 
+    if telemetry:
+        telemetry.watch(
+            input_transport=transport.input(),
+            stt=stt,
+            user_aggregator=user_aggregator,
+            output_transport=transport.output(),
+        )
     worker = PipelineWorker(
         pipeline,
         params=PipelineParams(
             enable_metrics=True,
             enable_usage_metrics=True,
         ),
-        observers=[],
+        observers=[o for o in (telemetry, bot_speech) if o],
     )
+
+    if telemetry:
+        @worker.rtvi.event_handler("on_client_message")
+        async def on_client_message(rtvi, msg):
+            data = msg.data if isinstance(msg.data, dict) else {}
+            if msg.type == "scenario_marker":  # ignored unless VOICE_DEBUG_SCENARIO is set
+                telemetry.note_marker(data.get("role"), data.get("down"))
+            elif msg.type == "scenario_name":
+                telemetry.note_scenario_name(data.get("name"))
+            elif msg.type == "mic_settings":
+                mic = telemetry.note_client_mic(msg.data)
+                if mic:
+                    logger.info("Client mic, live track settings:\n" + format_mic_table(mic))
+
+        if STT_PROVIDER == "sarvam":
+            @stt.event_handler("on_connected")
+            async def on_stt_connected(service):
+                telemetry.note_stt_connected()
 
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
@@ -253,20 +327,70 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     async def on_client_disconnected(transport, client):
         logger.info("Client disconnected")
         if session_id and not engine.completed:
-            save_session(session_id, engine.to_record(), [], status="abandoned")
+            try:
+                save_session(session_id, engine.to_record(), [], status="abandoned")
+            except Exception as e:
+                logger.warning(f"Failed to save abandoned session: {e}")
         await worker.cancel()
 
     runner = WorkerRunner(handle_sigint=False)
     await runner.add_workers(worker)
-    await runner.run()
+    try:
+        await runner.run()
+    finally:
+        if telemetry:
+            telemetry.log_summary()
+
+
+def _audio_in_filter():
+    """Optional server-side denoiser, applied before VAD, Smart Turn and STT.
+
+    Off by default, on evidence: browser noise suppression already runs on the
+    mic, and in the server/voice_eval A/B RNNoise in front of Sarvam made
+    recognition WORSE (fan WER 0.014 -> 0.062, quiet-bystander 0.26 -> 0.40):
+    it strips noise but also speech detail Sarvam uses, and it cannot remove a
+    bystander's voice, which is speech too. ~2.4 ms CPU per 20 ms frame.
+    SERVER_DENOISER=rnnoise needs `pip install pyrnnoise` (not in
+    requirements.txt); without it Pipecat logs an error and passes audio
+    through unchanged.
+    """
+    if VOICE.server_denoiser == "rnnoise":
+        from pipecat.audio.filters.rnnoise_filter import RNNoiseFilter
+
+        return RNNoiseFilter()
+    return None
+
+
+def _apply_log_level():
+    """Keep patient data out of the server log by default.
+
+    Pipecat's dev runner logs at DEBUG, where its own services print raw
+    Sarvam transcripts, the full LLM context and save_field arguments: names,
+    phone numbers, medications. INFO has none of that. LOG_LEVEL=DEBUG brings
+    the detail back for local debugging. Re-applied per session because the
+    runner installs its DEBUG handler after this module is imported.
+    """
+    level = os.getenv("LOG_LEVEL", "INFO").upper()
+    if level not in ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"):
+        level = "INFO"
+    logger.remove()
+    logger.add(sys.stderr, level=level)
 
 
 async def bot(runner_args: RunnerArguments):
     """Main bot entry point — discovered and run per session by the dev runner."""
+    _apply_log_level()
     transport_params = {
         "webrtc": lambda: TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            audio_in_filter=_audio_in_filter(),
+        ),
+        # Headless boot for `pipecat eval` and server/voice_eval/boot_check.py.
+        "eval": lambda: EvalTransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            audio_in_filter=_audio_in_filter(),
         ),
     }
 

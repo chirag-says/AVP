@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { PipecatClient } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
 import type { Segment } from "./api";
+import { micProcessingFromEnv, prepareMicProcessing, reportMicProcessing } from "../audio/micProcessing";
 
 // The scribe's session-bootstrap endpoint — the runner's canonical /start,
 // same as the chatbot uses, but on the scribe's port. startBotAndConnect()
@@ -37,6 +38,13 @@ export function useScribeSession(): ScribeSession {
     setErrorMsg(null);
     setSegments([]);
 
+    const micProcessing = micProcessingFromEnv();
+    try {
+      await prepareMicProcessing(micProcessing);
+    } catch (err) {
+      console.warn("[mic] could not apply mic processing settings", err);
+    }
+
     const client = new PipecatClient({
       transport: new SmallWebRTCTransport(),
       enableMic: true,
@@ -46,6 +54,9 @@ export function useScribeSession(): ScribeSession {
         onBotReady: () => {
           startedAtRef.current = performance.now();
           setStatus("listening");
+          reportMicProcessing(client, micProcessing, { sendToServer: false }).catch((err) =>
+            console.warn("[mic] could not read mic settings", err),
+          );
         },
         onDisconnected: () => {
           levelRef.current = 0;

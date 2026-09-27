@@ -59,3 +59,7 @@ Thumbs.db
 
 # === Claude Code local overrides (keep shared config tracked) ===
 .claude/settings.local.json
+
+# === Voice eval (synthetic audio + run outputs, regenerable) ===
+server/voice_eval/.cache/
+server/voice_eval/results/

@@ -1,0 +1,58 @@
+{
+  "_comment": [
+    "Test sets for validate.py (reliability, keyterm safety, numbers/dates). All content invented; never put real patient data here.",
+    "keyterm_safety `kind`: in_list = term is in server/voice/vocabulary.json; look_alike = NOT in the list but sounds like a listed term (the substitution risk); hospital = site names."
+  ],
+  "short": [
+    {"id": "s_yes", "say": "Yes.", "ref": "yes"},
+    {"id": "s_no", "say": "No.", "ref": "no"},
+    {"id": "s_age", "say": "Forty two.", "ref": "42"},
+    {"id": "s_none", "say": "None.", "ref": "none"},
+    {"id": "s_male", "say": "Male.", "ref": "male"},
+    {"id": "s_since", "say": "Since yesterday.", "ref": "since yesterday"},
+    {"id": "s_twice", "say": "Twice a day.", "ref": "twice a day"},
+    {"id": "s_noallergy", "say": "No allergies.", "ref": "no allergies"},
+    {"id": "s_fever", "say": "Fever and cough.", "ref": "fever and cough"},
+    {"id": "s_city", "say": "Bangalore.", "ref": "bangalore"}
+  ],
+  "numbers": [
+    {"id": "n_phone", "say": "My number is nine eight seven six five four three two one zero.", "kind": "phone", "expect": "9876543210"},
+    {"id": "n_phone_grouped", "say": "My number is nine eight seven six five. Four three two one zero.", "kind": "phone", "expect": "9876543210"},
+    {"id": "n_phone_double", "say": "It is nine eight double seven, six five four three two one.", "kind": "phone", "expect": "9877654321"},
+    {"id": "n_date", "say": "My date of birth is twelve June, two thousand four.", "kind": "date", "expect": {"day": 12, "month": 6, "year": 2004}},
+    {"id": "n_date_ordinal", "say": "I was born on the twelfth of June, two thousand four.", "kind": "date", "expect": {"day": 12, "month": 6, "year": 2004}},
+    {"id": "n_age", "say": "I am twenty two years old.", "kind": "age", "expect": 22},
+    {"id": "n_dosage", "say": "Five hundred milligrams twice a day.", "kind": "dosage", "expect": {"amount": 500, "unit": "mg", "frequency": "twice"}},
+    {"id": "n_duration", "say": "I have had diabetes for five years.", "kind": "duration", "expect": {"value": 5, "unit": "year"}},
+    {"id": "n_duration_months", "say": "The pain started three months ago.", "kind": "duration", "expect": {"value": 3, "unit": "month"}}
+  ],
+  "keyterm_safety": [
+    {"id": "k_metformin", "say": "I take metformin every morning.", "term": "metformin", "kind": "in_list"},
+    {"id": "k_amlodipine", "say": "I take amlodipine for blood pressure.", "term": "amlodipine", "kind": "in_list"},
+    {"id": "k_pantoprazole", "say": "I take pantoprazole before breakfast.", "term": "pantoprazole", "kind": "in_list"},
+    {"id": "k_telmisartan", "say": "The doctor gave me telmisartan.", "term": "telmisartan", "kind": "in_list"},
+    {"id": "k_glimepiride", "say": "I am on glimepiride for sugar.", "term": "glimepiride", "kind": "in_list"},
+    {"id": "k_prednisolone", "say": "I was given prednisolone tablets.", "term": "prednisolone", "kind": "in_list"},
+    {"id": "k_sitagliptin", "say": "I take sitagliptin daily.", "term": "sitagliptin", "kind": "in_list"},
+    {"id": "k_clopidogrel", "say": "I take clopidogrel after my stent.", "term": "clopidogrel", "kind": "in_list"},
+    {"id": "k_amiodarone", "say": "I take amiodarone for my heart rhythm.", "term": "amiodarone", "kind": "look_alike"},
+    {"id": "k_clonidine", "say": "I take clonidine at night.", "term": "clonidine", "kind": "look_alike"},
+    {"id": "k_metronidazole", "say": "I was given metronidazole for an infection.", "term": "metronidazole", "kind": "look_alike"},
+    {"id": "k_prednisone", "say": "I was given prednisone last week.", "term": "prednisone", "kind": "look_alike"},
+    {"id": "k_sumatriptan", "say": "I take sumatriptan for migraine.", "term": "sumatriptan", "kind": "look_alike"},
+    {"id": "k_glipizide", "say": "I am on glipizide for sugar.", "term": "glipizide", "kind": "look_alike"},
+    {"id": "k_valsartan", "say": "The doctor gave me valsartan.", "term": "valsartan", "kind": "look_alike"},
+    {"id": "k_hydroxyzine", "say": "I take hydroxyzine for itching.", "term": "hydroxyzine", "kind": "look_alike"},
+    {"id": "k_hypothyroid", "say": "I have hypothyroidism.", "term": "hypothyroidism", "kind": "in_list"},
+    {"id": "k_hyperthyroid", "say": "I have hyperthyroidism.", "term": "hyperthyroidism", "kind": "in_list"},
+    {"id": "k_hypotension", "say": "I have low blood pressure, hypotension.", "term": "hypotension", "kind": "look_alike"},
+    {"id": "k_tb", "say": "I had tuberculosis two years ago.", "term": "tuberculosis", "kind": "in_list"},
+    {"id": "k_avp", "say": "I was admitted at AVP Hospital last year.", "term": "avp hospital", "kind": "hospital"},
+    {"id": "k_apollo", "say": "I was treated at Apollo Hospital.", "term": "apollo hospital", "kind": "hospital"},
+    {"id": "k_manipal", "say": "My surgery was at Manipal Hospital.", "term": "manipal hospital", "kind": "hospital"}
+  ],
+  "medical_lexicon_extra": [
+    "amiodarone", "clonidine", "metronidazole", "prednisone", "sumatriptan", "glipizide", "valsartan",
+    "hydroxyzine", "hydralazine", "hypotension", "apollo hospital", "manipal hospital", "avp hospital"
+  ]
+}

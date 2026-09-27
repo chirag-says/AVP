@@ -6,6 +6,9 @@ import Transcript, { type TurnEntry } from "./Transcript";
 import IntakeForm from "./IntakeForm";
 import Records from "./Records";
 import VoiceOrb, { type AudioLevels } from "./VoiceOrb";
+import { micProcessingFromEnv, prepareMicProcessing, reportMicProcessing } from "./audio/micProcessing";
+import ScenarioMarkers from "./audio/ScenarioMarkers";
+import { SCENARIO } from "./audio/scenario";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import "./App.css";
@@ -89,11 +92,25 @@ export default function App() {
     setErrorMsg(null);
     setAudioBlocked(false);
 
+    const micProcessing = micProcessingFromEnv();
+    try {
+      await prepareMicProcessing(micProcessing);
+    } catch (err) {
+      // Never block a session over this: the browser defaults still apply.
+      console.warn("[mic] could not apply mic processing settings", err);
+    }
+
     const client = new PipecatClient({
       transport: new SmallWebRTCTransport(),
       enableMic: true,
       callbacks: {
-        onBotReady: () => setStatus("connected"),
+        onBotReady: () => {
+          setStatus("connected");
+          if (SCENARIO) client.sendClientMessage("scenario_name", { name: SCENARIO });
+          reportMicProcessing(client, micProcessing, { sendToServer: true }).catch((err) =>
+            console.warn("[mic] could not read mic settings", err),
+          );
+        },
         onDisconnected: () => {
           setStatus("idle");
           stopBotMeter();
@@ -175,7 +192,7 @@ export default function App() {
       <header className="sticky top-0 z-10 border-b bg-background/80 backdrop-blur-sm">
         <div className="mx-auto flex h-14 max-w-5xl items-center gap-3 px-6">
           <Stethoscope className="size-5 shrink-0 text-muted-foreground" />
-          <span className="font-medium">Hospital Voice Intake</span>
+          <span className="font-medium">AVP Hospital Voice Intake</span>
           <Badge variant="outline" className="font-normal text-muted-foreground">
             PoC
           </Badge>
@@ -230,6 +247,16 @@ export default function App() {
               levelsRef={levelsRef}
               onClick={status === "idle" || status === "error" ? connect : disconnect}
             />
+            <p className="mt-2 text-center text-xs text-muted-foreground">
+              For best recognition, use a headset or keep the microphone close to the patient. A laptop
+              microphone also picks up people talking nearby.
+            </p>
+            {SCENARIO && (
+              <ScenarioMarkers
+                enabled={status === "connected"}
+                send={(type, data) => clientRef.current?.sendClientMessage(type, data)}
+              />
+            )}
             <main className="mt-8 grid items-start gap-6 md:grid-cols-2">
               <Transcript turns={turns} />
               <IntakeForm values={fields} />
