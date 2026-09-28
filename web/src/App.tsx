@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { PipecatClient } from "@pipecat-ai/client-js";
 import { SmallWebRTCTransport } from "@pipecat-ai/small-webrtc-transport";
-import { Database, ScrollText, Stethoscope, VolumeX } from "lucide-react";
-import Transcript, { type TurnEntry } from "./Transcript";
+import { Database, LoaderCircle, ScrollText, Stethoscope, TriangleAlert, VolumeX } from "lucide-react";
+import Transcript from "./Transcript";
 import IntakeForm from "./IntakeForm";
 import Records from "./Records";
 import VoiceOrb, { type AudioLevels } from "./VoiceOrb";
 import { micProcessingFromEnv, prepareMicProcessing, reportMicProcessing } from "./audio/micProcessing";
 import ScenarioMarkers from "./audio/ScenarioMarkers";
 import { SCENARIO } from "./audio/scenario";
+import CompletionDialog from "./intake/CompletionDialog";
+import { initialIntakeState, intakeReducer, isLocked, type Phase } from "./intake/intakeState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import "./App.css";
@@ -20,16 +22,29 @@ import "./App.css";
 // in testing — startBotAndConnect() against /start is the current API.
 const START_ENDPOINT = import.meta.env.VITE_START_ENDPOINT ?? "http://localhost:7860/start";
 
-type Status = "idle" | "connecting" | "connected" | "error";
+type OrbStatus = "idle" | "connecting" | "connected" | "error";
+
+const ORB_STATUS: Record<Phase, OrbStatus> = {
+  IDLE: "idle",
+  CONNECTING: "connecting",
+  STARTING_NEXT_PATIENT: "connecting",
+  IN_PROGRESS: "connected",
+  FINALIZING: "connected",
+  SAVING: "connected",
+  SAVE_FAILED: "connected",
+  COMPLETED: "connected",
+  ERROR: "error",
+};
 
 export default function App() {
   const [view, setView] = useState<"intake" | "records">("intake");
-  const [status, setStatus] = useState<Status>("idle");
-  const [turns, setTurns] = useState<TurnEntry[]>([]);
-  const [fields, setFields] = useState<Record<string, unknown>>({});
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // All patient-specific UI state (phase, transcript, fields, name, session)
+  // lives in one reducer so the next patient can replace it in one step.
+  const [intake, dispatch] = useReducer(intakeReducer, undefined, () => initialIntakeState());
   const [audioBlocked, setAudioBlocked] = useState(false);
   const clientRef = useRef<PipecatClient | null>(null);
+  // Generation of the live connection; callbacks from older ones are ignored.
+  const genRef = useRef(0);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   // Drives the orb's pulse. Deliberately a ref, not state: these update ~20x/sec
@@ -88,8 +103,8 @@ export default function App() {
   useEffect(() => stopBotMeter, [stopBotMeter]);
 
   const connect = useCallback(async () => {
-    setStatus("connecting");
-    setErrorMsg(null);
+    const gen = ++genRef.current;
+    dispatch({ type: "CONNECT_START", newGen: gen });
     setAudioBlocked(false);
 
     const micProcessing = micProcessingFromEnv();
@@ -105,19 +120,21 @@ export default function App() {
       enableMic: true,
       callbacks: {
         onBotReady: () => {
-          setStatus("connected");
+          dispatch({ type: "CONNECTED", gen });
           if (SCENARIO) client.sendClientMessage("scenario_name", { name: SCENARIO });
           reportMicProcessing(client, micProcessing, { sendToServer: true }).catch((err) =>
             console.warn("[mic] could not read mic settings", err),
           );
         },
         onDisconnected: () => {
-          setStatus("idle");
-          stopBotMeter();
-          levelsRef.current.local = 0;
+          dispatch({ type: "DISCONNECTED", gen });
+          if (genRef.current === gen) {
+            stopBotMeter();
+            levelsRef.current.local = 0;
+          }
         },
         onLocalAudioLevel: (level) => {
-          levelsRef.current.local = level;
+          if (genRef.current === gen) levelsRef.current.local = level;
         },
         onTrackStarted: (track) => {
           // Neither client-js nor small-webrtc-transport auto-plays incoming
@@ -131,7 +148,7 @@ export default function App() {
           // unlike Daily's transport, it never fires for our own local mic,
           // so no participant.local check is needed or even possible here
           // (this transport doesn't pass a participant argument at all).
-          if (track.kind === "audio" && audioRef.current) {
+          if (track.kind === "audio" && audioRef.current && genRef.current === gen) {
             const stream = new MediaStream([track]);
             audioRef.current.srcObject = stream;
             startBotMeter(stream);
@@ -144,46 +161,79 @@ export default function App() {
           }
         },
         onUserTranscript: (data) => {
-          if (data.final) setTurns((prev) => [...prev, { role: "patient", text: data.text }]);
+          if (data.final) dispatch({ type: "TURN", gen, role: "patient", text: data.text });
         },
         onBotTranscript: (data) => {
-          setTurns((prev) => [...prev, { role: "bot", text: data.text }]);
+          dispatch({ type: "TURN", gen, role: "bot", text: data.text });
         },
         onServerMessage: (data) => {
-          // bot.py broadcasts {type: "field_update", key, value} after every save_field call
-          if (data?.type === "field_update") {
-            setFields((prev) => {
-              const next = structuredClone(prev);
-              const parts = String(data.key).split(".");
-              let node: any = next;
-              for (const part of parts.slice(0, -1)) node = node[part] ??= {};
-              node[parts[parts.length - 1]] = data.value;
-              return next;
-            });
-          }
-          if (data?.type === "intake_complete") {
-            setStatus("idle");
+          switch (data?.type) {
+            case "field_update":
+              dispatch({ type: "FIELD_UPDATE", gen, key: String(data.key), value: data.value, status: data.status });
+              break;
+            case "intake_finalizing":
+              dispatch({ type: "FINALIZING", gen });
+              break;
+            case "intake_saving":
+              dispatch({ type: "SAVING", gen });
+              break;
+            case "intake_save_failed":
+              dispatch({ type: "SAVE_FAILED", gen, message: String(data.message ?? "The information could not be saved.") });
+              break;
+            case "intake_complete":
+              // Sent only after Supabase confirmed the save. The patient is done:
+              // stop listening, the bot's closing line still plays.
+              client.enableMic(false);
+              dispatch({ type: "COMPLETE", gen, sessionId: data.session_id ?? null, patientName: data.patient_name ?? null });
+              break;
           }
         },
       },
     });
 
     clientRef.current = client;
+    // Dev builds only (compiled out of production): lets the end-to-end test
+    // (server/tests/e2e_intake_browser.py) answer as the patient via sendText.
+    if (import.meta.env.DEV) (window as unknown as { __intakeClient?: PipecatClient }).__intakeClient = client;
 
     try {
       await client.startBotAndConnect({ endpoint: START_ENDPOINT });
     } catch (err) {
       console.error(err);
-      setErrorMsg(err instanceof Error ? err.message : "Failed to connect");
-      setStatus("error");
+      dispatch({ type: "CONNECT_FAILED", gen, message: err instanceof Error ? err.message : "Failed to connect" });
     }
   }, [startBotMeter, stopBotMeter]);
 
   const disconnect = useCallback(async () => {
     await clientRef.current?.disconnect();
-    setStatus("idle");
     stopBotMeter();
   }, [stopBotMeter]);
+
+  const retrySave = useCallback(() => {
+    clientRef.current?.sendClientMessage("retry_save", {});
+  }, []);
+
+  // Start Next Patient: close the finished session, wipe every patient-specific
+  // value in one reducer step, then open a brand-new server session (new
+  // IntakeSession, engine, LLM context and database row). No page reload.
+  const startNextPatient = useCallback(async () => {
+    const old = clientRef.current;
+    clientRef.current = null;
+    const gen = ++genRef.current;
+    dispatch({ type: "START_NEXT_PATIENT", newGen: gen });
+    stopBotMeter();
+    levelsRef.current = { local: 0, remote: 0 };
+    if (audioRef.current) audioRef.current.srcObject = null;
+    try {
+      await old?.disconnect();
+    } catch (err) {
+      console.warn("previous session already closed", err);
+    }
+    await connect();
+  }, [connect, stopBotMeter]);
+
+  const { phase } = intake;
+  const locked = isLocked(phase);
 
   return (
     <div className="min-h-svh bg-background">
@@ -198,7 +248,7 @@ export default function App() {
           </Badge>
 
           <span className="ml-auto flex items-center gap-3">
-            {status === "connected" && (
+            {phase === "IN_PROGRESS" && (
               <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" />
                 Live
@@ -223,10 +273,27 @@ export default function App() {
       </header>
 
       <div className="mx-auto max-w-5xl px-6 py-8">
-        {errorMsg && (
+        {phase === "ERROR" && intake.message && (
           <p className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive">
-            {errorMsg}
+            {intake.message}
           </p>
+        )}
+        {(phase === "FINALIZING" || phase === "SAVING") && (
+          <p role="status" className="mb-4 flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            <LoaderCircle className="size-4 animate-spin" /> Saving your information…
+          </p>
+        )}
+        {phase === "SAVE_FAILED" && (
+          <div
+            role="alert"
+            className="mb-4 flex flex-wrap items-center justify-center gap-3 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-2.5 text-sm text-destructive"
+          >
+            <TriangleAlert className="size-4" />
+            {intake.message}
+            <Button variant="outline" size="sm" onClick={retrySave}>
+              Retry saving
+            </Button>
+          </div>
         )}
         {audioBlocked && (
           <div className="mb-4 flex items-center justify-center">
@@ -243,9 +310,11 @@ export default function App() {
         {view === "intake" ? (
           <>
             <VoiceOrb
-              status={status}
+              status={ORB_STATUS[phase]}
               levelsRef={levelsRef}
-              onClick={status === "idle" || status === "error" ? connect : disconnect}
+              // While saving or completed the session belongs to the save; the
+              // orb can't end it or start a new one (use Start Next Patient).
+              onClick={phase === "IDLE" || phase === "ERROR" ? connect : locked ? () => {} : disconnect}
             />
             <p className="mt-2 text-center text-xs text-muted-foreground">
               For best recognition, use a headset or keep the microphone close to the patient. A laptop
@@ -253,19 +322,26 @@ export default function App() {
             </p>
             {SCENARIO && (
               <ScenarioMarkers
-                enabled={status === "connected"}
+                enabled={phase === "IN_PROGRESS"}
                 send={(type, data) => clientRef.current?.sendClientMessage(type, data)}
               />
             )}
             <main className="mt-8 grid items-start gap-6 md:grid-cols-2">
-              <Transcript turns={turns} />
-              <IntakeForm values={fields} />
+              <Transcript turns={intake.turns} />
+              <IntakeForm values={intake.fields} status={intake.fieldStatus} saved={phase === "COMPLETED"} />
             </main>
           </>
         ) : (
           <Records />
         )}
       </div>
+
+      <CompletionDialog
+        open={phase === "COMPLETED"}
+        patientName={intake.patientName}
+        onStartNext={startNextPatient}
+        busy={phase !== "COMPLETED"}
+      />
     </div>
   );
 }

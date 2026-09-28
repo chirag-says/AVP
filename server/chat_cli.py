@@ -96,8 +96,9 @@ def main():
         print(f"Bot: {bot_text}")
         transcript.append({"role": "bot", "text": bot_text})
 
-        if engine.completed:
-            record = engine.to_record()
+        if engine.ready:
+            engine.completed = True
+            record = engine.freeze()
             print("\n--- INTAKE COMPLETE ---")
             import json
             print(json.dumps(record, indent=2))

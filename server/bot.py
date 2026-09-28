@@ -26,7 +26,7 @@ from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnal
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.evals.transport import EvalTransportParams
-from pipecat.frames.frames import EndWorkerFrame, LLMRunFrame
+from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -39,7 +39,6 @@ from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.google.llm import GoogleLLMService
 from pipecat.services.kokoro.tts import KokoroTTSService
-from pipecat.services.llm_service import FunctionCallParams
 from pipecat.services.sarvam.llm import SarvamLLMService
 from pipecat.services.sarvam.tts import SarvamTTSService
 from pipecat.services.whisper.stt import WhisperSTTService
@@ -50,9 +49,10 @@ from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
-from intake.engine import IntakeEngine
 from intake.prompts import build_system_prompt
-from services.db import create_session, list_sessions, save_session
+from intake.reply_guard import ReplyGuard
+from intake.session import GREETING, IntakeSession, Persistence, transcript_from_context
+from services.db import complete_session, create_session, list_sessions, save_session
 from voice.config import VoiceConfig
 from voice.echo_guard import BotSpeechTracker, EchoAwareVADUserTurnStartStrategy, EchoTranscriptFilter
 from voice.recovery import NoTranscriptRecovery
@@ -152,13 +152,17 @@ async def get_records():
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
     logger.info("Starting hospital intake bot")
 
-    engine = IntakeEngine()
+    # Everything patient-specific lives in this session and dies with this
+    # connection: the next patient gets a new connection, session, engine,
+    # LLM context and database row.
     session_id = None
     if HAVE_SUPABASE:
         try:
             session_id = create_session()
         except Exception as e:
-            logger.warning(f"Supabase unavailable, running without persistence: {e}")
+            # The session retries creating the row at finalize; completion is
+            # never announced unless the record is actually saved.
+            logger.warning(f"Supabase unavailable at call start: {type(e).__name__}")
     if session_id:
         logger.info(f"Intake session {session_id}")
 
@@ -169,50 +173,20 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     tts = _build_tts()
     llm = _build_llm()
 
-    async def save_field_tool(params: FunctionCallParams, key: str, value: str):
-        """Record one piece of patient information.
+    async def send_to_client(message: dict):
+        await worker.rtvi.send_server_message(message)
 
-        Args:
-            key: The field's dot-path, e.g. "personal.full_name" or "personal.phone".
-                Must be one of the known intake fields.
-            value: The value to store, as the patient stated it. For list fields
-                (symptoms, existing conditions, current medications), pass a JSON
-                array as a string, e.g. '["fever", "headache"]'.
-        """
-        result = engine.save_field(key, value)
-        if result.get("ok"):
-            canonical_key = result["saved"]
-            await worker.rtvi.send_server_message(
-                {"type": "field_update", "key": canonical_key, "value": engine.get(canonical_key)}
-            )
-        await params.result_callback(result)
+    def transcript() -> list[dict]:
+        return transcript_from_context(context.messages)
 
-    async def finalize_tool(params: FunctionCallParams):
-        """Attempt to close out the intake session.
+    intake = IntakeSession(
+        send=send_to_client,
+        persistence=Persistence(create_session, complete_session) if HAVE_SUPABASE else None,
+        session_id=session_id,
+        get_transcript=transcript,
+    )
 
-        Call this only once every required field has been collected and
-        confirmed with the patient.
-        """
-        result = engine.finalize()
-        await params.result_callback(result)
-        if not result.get("ok"):
-            return
-
-        record = engine.to_record()
-        transcript = [
-            {"role": m.get("role"), "text": m.get("content")}
-            for m in context.messages
-            if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str)
-        ]
-        if session_id:
-            try:
-                save_session(session_id, record, transcript, status="completed")
-            except Exception as e:
-                logger.warning(f"Failed to save completed session: {e}")
-        await worker.rtvi.send_server_message({"type": "intake_complete"})
-        await params.llm.push_frame(EndWorkerFrame())
-
-    telemetry = VoiceTelemetry(session_label=session_id, scenario=VOICE.debug_scenario) if VOICE.telemetry else None
+    telemetry = VoiceTelemetry(session_label=intake.session_id, scenario=VOICE.debug_scenario) if VOICE.telemetry else None
     bot_speech = BotSpeechTracker() if VOICE.echo_guard else None
 
     # Turn-taking, stated explicitly (these were Pipecat's implicit defaults,
@@ -231,7 +205,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())],
     )
 
-    context = LLMContext(tools=[save_field_tool, finalize_tool])
+    context = LLMContext(tools=intake.tools())
     user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
         context,
         user_params=LLMUserAggregatorParams(
@@ -269,7 +243,10 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     if VOICE.no_transcript_recovery:
         # After the filter, so a dropped transcript does not count as patient text.
         processors.append(NoTranscriptRecovery(telemetry=telemetry))
-    processors += [user_aggregator, llm, tts, transport.output(), assistant_aggregator]
+    # ReplyGuard: if the patient is owed a reply and everything goes quiet (empty LLM
+    # response, or a noise turn swallowed the follow-up), re-runs the LLM, then asks them to repeat.
+    reply_guard = ReplyGuard(context, is_open=lambda: intake.state == "open")
+    processors += [user_aggregator, llm, reply_guard, tts, transport.output(), assistant_aggregator]
     pipeline = Pipeline(processors)
 
     if telemetry:
@@ -288,10 +265,12 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         observers=[o for o in (telemetry, bot_speech) if o],
     )
 
-    if telemetry:
-        @worker.rtvi.event_handler("on_client_message")
-        async def on_client_message(rtvi, msg):
-            data = msg.data if isinstance(msg.data, dict) else {}
+    @worker.rtvi.event_handler("on_client_message")
+    async def on_client_message(rtvi, msg):
+        data = msg.data if isinstance(msg.data, dict) else {}
+        if msg.type == "retry_save":
+            await intake.retry_save()
+        elif telemetry:
             if msg.type == "scenario_marker":  # ignored unless VOICE_DEBUG_SCENARIO is set
                 telemetry.note_marker(data.get("role"), data.get("down"))
             elif msg.type == "scenario_name":
@@ -301,23 +280,17 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
                 if mic:
                     logger.info("Client mic, live track settings:\n" + format_mic_table(mic))
 
-        if STT_PROVIDER == "sarvam":
-            @stt.event_handler("on_connected")
-            async def on_stt_connected(service):
-                telemetry.note_stt_connected()
+    if telemetry and STT_PROVIDER == "sarvam":
+        @stt.event_handler("on_connected")
+        async def on_stt_connected(service):
+            telemetry.note_stt_connected()
 
     @worker.rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
-        context.add_message(
-            {
-                "role": "developer",
-                "content": (
-                    "Start the conversation now: warmly greet the patient and "
-                    "ask for their full name."
-                ),
-            }
-        )
-        await worker.queue_frames([LLMRunFrame()])
+        # A fixed greeting (added to the LLM context as the assistant's first
+        # turn), so every patient starts the same way.
+        intake.engine.mark_asked("personal.full_name")
+        await worker.queue_frames([TTSSpeakFrame(GREETING)])
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
@@ -326,11 +299,11 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
         logger.info("Client disconnected")
-        if session_id and not engine.completed:
+        if intake.session_id and intake.state not in ("saved", "saving"):
             try:
-                save_session(session_id, engine.to_record(), [], status="abandoned")
+                save_session(intake.session_id, intake.engine.to_record(), transcript(), status="abandoned")
             except Exception as e:
-                logger.warning(f"Failed to save abandoned session: {e}")
+                logger.warning(f"Failed to save abandoned session: {type(e).__name__}")
         await worker.cancel()
 
     runner = WorkerRunner(handle_sigint=False)

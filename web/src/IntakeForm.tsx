@@ -1,6 +1,7 @@
 import { Activity, CircleCheck, CircleDashed, HeartPulse, User } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { INTAKE_FIELDS, type FieldDef } from "./fields";
+import { STATUS_LABEL, displayValue, toSymptoms } from "./intake/format";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
@@ -26,6 +27,13 @@ function isFilled(v: unknown): boolean {
   return Array.isArray(v) ? v.length > 0 : String(v).trim() !== "";
 }
 
+// A field counts as done once the server recorded it (answered, confirmed or
+// skipped); a value awaiting the patient's confirmation does not.
+function isDone(value: unknown, status: string | undefined): boolean {
+  if (status === "needs_confirmation") return false;
+  return status === "skipped" || isFilled(value);
+}
+
 /** Groups fields by their key prefix, preserving the order fields.ts declares. */
 function groupFields(fields: FieldDef[]) {
   const groups: { key: string; fields: FieldDef[] }[] = [];
@@ -38,42 +46,69 @@ function groupFields(fields: FieldDef[]) {
   return groups;
 }
 
-function FieldValue({ value }: { value: unknown }) {
+function FieldValue({ fieldKey, value }: { fieldKey: string; value: unknown }) {
   // Nothing to draw for a field the bot hasn't collected yet: the dashed icon
-  // and muted label already read as pending, and a placeholder glyph in every
-  // empty row just adds a column of noise.
+  // and muted label already read as pending.
   if (!isFilled(value)) return null;
 
-  // Symptoms, allergies, conditions and medications all arrive as lists. Chips
-  // make a five-symptom answer scannable where a comma-joined string doesn't.
-  if (Array.isArray(value)) {
+  if (fieldKey === "visit.symptoms") {
+    const symptoms = toSymptoms(value);
+    if (!symptoms.length) return null;
+    return (
+      <ul className="flex flex-col gap-1.5">
+        {symptoms.map((s, i) => (
+          <li key={i}>
+            <span className="font-medium">{s.description}</span>
+            {(s.duration || s.severity) && (
+              <span className="block text-xs text-muted-foreground">
+                {[s.duration && `Duration: ${s.duration}`, s.severity && `Severity: ${s.severity}`]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </span>
+            )}
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  const shown = displayValue(value);
+  if (shown == null) return null;
+  // Conditions and medications arrive as lists. Chips make a five-item
+  // answer scannable where a comma-joined string doesn't.
+  if (Array.isArray(shown)) {
     return (
       <span className="flex flex-wrap gap-1">
-        {value.map((item, i) => (
+        {shown.map((item, i) => (
           <Badge key={i} variant="secondary" className="font-normal">
-            {typeof item === "string" ? item : JSON.stringify(item)}
+            {item}
           </Badge>
         ))}
       </span>
     );
   }
-
-  return <span className="font-medium break-words">{String(value)}</span>;
+  return <span className="font-medium break-words">{shown}</span>;
 }
 
-export default function IntakeForm({ values }: { values: FieldValues }) {
+export default function IntakeForm({
+  values,
+  status = {},
+  saved = false,
+}: {
+  values: FieldValues;
+  status?: Record<string, string>;
+  saved?: boolean;
+}) {
   const required = INTAKE_FIELDS.filter((f) => f.required);
-  const done = required.filter((f) => isFilled(getNested(values, f.key))).length;
-  const complete = done === required.length;
+  const done = required.filter((f) => isDone(getNested(values, f.key), status[f.key])).length;
 
   return (
     <Card className="h-full">
       <CardHeader className="border-b">
         <CardTitle className="text-base">Intake record</CardTitle>
         <CardAction>
-          <Badge variant={complete ? "default" : "secondary"}>
-            {complete ? "Complete" : `${done} of ${required.length}`}
-          </Badge>
+          {/* "Saved" only after the server confirmed the database write. */}
+          <Badge variant={saved ? "default" : "secondary"}>{saved ? "Saved" : `${done} of ${required.length}`}</Badge>
         </CardAction>
         <Progress
           value={(done / required.length) * 100}
@@ -95,7 +130,8 @@ export default function IntakeForm({ values }: { values: FieldValues }) {
               <ul>
                 {group.fields.map((field) => {
                   const raw = getNested(values, field.key);
-                  const filled = isFilled(raw);
+                  const fieldStatus = status[field.key];
+                  const filled = isDone(raw, fieldStatus);
                   return (
                     <li
                       key={field.key}
@@ -113,7 +149,15 @@ export default function IntakeForm({ values }: { values: FieldValues }) {
                         )}
                       </span>
                       <span className="min-w-0 flex-1">
-                        <FieldValue value={raw} />
+                        {fieldStatus === "needs_confirmation" ? (
+                          <span className="text-xs text-amber-700 dark:text-amber-400">
+                            {STATUS_LABEL.needs_confirmation}…
+                          </span>
+                        ) : fieldStatus === "skipped" && !isFilled(raw) ? (
+                          <span className="text-xs text-muted-foreground">{STATUS_LABEL.skipped}</span>
+                        ) : (
+                          <FieldValue fieldKey={field.key} value={raw} />
+                        )}
                       </span>
                     </li>
                   );

@@ -25,5 +25,7 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  // Unit tests run under Node (`node --test src/intake/*.test.ts`), not in the app build.
+  "exclude": ["src/**/*.test.ts"]
 }
