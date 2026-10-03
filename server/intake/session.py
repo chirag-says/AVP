@@ -24,10 +24,13 @@ from pipecat.frames.frames import FunctionCallResultProperties
 from pipecat.services.llm_service import FunctionCallParams
 
 from .engine import FieldStatus, IntakeEngine
+from .language_follow import LanguageState
+from .languages import ENGLISH
 
-GREETING = "Welcome to AVP Hospital. I'm here to help you check in. Could you please tell me your full name?"
-CLOSING = "Thank you{name}. Your information has been saved. Please take a seat; the doctor will see you shortly."
-SAVE_PROBLEM = "There's a problem saving your information. Please wait a moment."
+# The English lines; each language's own are in languages.py.
+GREETING = ENGLISH.greeting
+CLOSING = ENGLISH.closing
+SAVE_PROBLEM = ENGLISH.save_problem
 
 Send = Callable[[dict], Awaitable[None]]
 _NO_REPLY = FunctionCallResultProperties(run_llm=False)
@@ -57,8 +60,10 @@ class Persistence:
 
 class IntakeSession:
     def __init__(self, *, send: Send, persistence: Persistence | None, session_id: str | None,
-                 get_transcript: Callable[[], list[dict]]):
+                 get_transcript: Callable[[], list[dict]], language: LanguageState | None = None):
+        self.language = language or LanguageState(ENGLISH)
         self.engine = IntakeEngine()
+        self.engine.language = self.language
         self.session_id = session_id
         self.state = "open"  # open | saving | saved | save_failed
         self._send = send
@@ -205,14 +210,14 @@ class IntakeSession:
         name = self.first_name()
         await self._send({"type": "intake_complete", "session_id": self.session_id, "patient_name": name})
         if self._llm is not None:
-            await self._llm.push_frame(TTSSpeakFrame(CLOSING.format(name=f", {name}" if name else "")))
+            await self._llm.push_frame(TTSSpeakFrame(self.language.current.closing.format(name=f", {name}" if name else "")))
             # Downstream after the closing line, so it is spoken before the session ends.
             await self._llm.push_frame(EndWorkerFrame())
 
     async def _announce_save_problem(self):
         await self._send({"type": "intake_save_failed", "message": SAVE_PROBLEM})
         if self._llm is not None:
-            await self._llm.push_frame(TTSSpeakFrame(SAVE_PROBLEM))
+            await self._llm.push_frame(TTSSpeakFrame(self.language.current.save_problem))
 
     def first_name(self) -> str | None:
         name = self.engine.get("personal.full_name")

@@ -1,3 +1,4 @@
+from .languages import ENGLISH, LANGUAGES, IntakeLanguage
 from .schema import INTAKE_FIELDS, IntakeField
 
 _CONFIRM_NOTES = {
@@ -17,7 +18,28 @@ def _field_line(f: IntakeField) -> str:
     return " ".join(parts)
 
 
-def build_system_prompt(fields: list[IntakeField] = INTAKE_FIELDS) -> str:
+def _language_rules(start: IntakeLanguage) -> str:
+    names = ", ".join(lang.name for lang in LANGUAGES.values())
+    scripts = "; ".join(f"{lang.name} in {lang.script} script" for lang in LANGUAGES.values() if lang.script != "Latin")
+    return f"""Language:
+- The greeting was in {start.name}, the language chosen for this patient. Keep speaking
+  {start.name}. English words, names, numbers or a short English answer inside the
+  conversation are normal and are NOT a reason to switch.
+- Switch to another language ({names}) only if the patient asks you to, says they don't
+  understand, or answers two questions in a row fully in that language. After switching,
+  keep speaking the new language by the same rule.
+- Write {scripts}. Never write those languages in English letters: your words are read
+  aloud by a voice for that script.
+- Tool values are ALWAYS in English, whatever language the patient speaks, because the
+  doctor reads the record in English. Translate ordinary answers (symptoms, durations,
+  gender, "no allergies") into plain English: "illa", "nahi", "illai" or "ledu" about
+  allergies, conditions or medications means "none". Write numbers as digits.
+- Names, addresses, and medicine, allergy and condition names: write them in English
+  letters exactly as the patient said them (transliterate: "ರವಿ ಕುಮಾರ್" is "Ravi Kumar").
+  Never translate, correct or complete them."""
+
+
+def build_system_prompt(fields: list[IntakeField] = INTAKE_FIELDS, language: IntakeLanguage = ENGLISH) -> str:
     field_lines = "\n".join(_field_line(f) for f in fields)
     return f"""You are a warm, patient intake assistant at the reception desk of AVP Hospital.
 You have already greeted the patient and asked for their full name.
@@ -61,4 +83,6 @@ Rules:
   intake is complete or saved; the system announces that after saving.
 - If finalize returns an error, keep asking about exactly what it lists.
 - Speak plainly in short sentences. No markdown, no emojis, no bullet lists — your words
-  are converted directly to speech."""
+  are converted directly to speech.
+
+{_language_rules(language)}"""

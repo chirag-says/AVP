@@ -76,10 +76,11 @@ def owes_reply(messages) -> bool:
 
 class ReplyGuard(FrameProcessor):
     def __init__(self, context: LLMContext, is_open: Callable[[], bool] = lambda: True,
-                 idle_s: float = IDLE_S, **kwargs):
+                 idle_s: float = IDLE_S, prompt: Callable[[], str] = lambda: EMPTY_REPLY_PROMPT, **kwargs):
         super().__init__(**kwargs)
         self._context = context
         self._is_open = is_open
+        self._prompt = prompt
         self._idle_s = idle_s
         self._llm_busy = False
         self._bot_speaking = False
@@ -152,7 +153,7 @@ class ReplyGuard(FrameProcessor):
             self._nudges = 0
             self.fallbacks += 1
             logger.warning("Still no reply after re-running the LLM; asking the patient to repeat")
-            await self.push_frame(TTSSpeakFrame(EMPTY_REPLY_PROMPT), FrameDirection.DOWNSTREAM)
+            await self.push_frame(TTSSpeakFrame(self._prompt()), FrameDirection.DOWNSTREAM)
             return
         self._nudges += 1
         self.retries += 1

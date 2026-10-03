@@ -14,6 +14,7 @@ an ordinary turn. At most MAX_CONSECUTIVE requests in a row, so a noise source
 that keeps tripping VAD cannot make the bot repeat itself indefinitely.
 """
 import time
+from collections.abc import Callable
 
 from loguru import logger
 from pipecat.frames.frames import (
@@ -37,7 +38,8 @@ MAX_CONSECUTIVE = 2
 
 
 class NoTranscriptRecovery(FrameProcessor):
-    def __init__(self, telemetry: VoiceTelemetry | None = None, prompt: str = RECOVERY_PROMPT, **kwargs):
+    def __init__(self, telemetry: VoiceTelemetry | None = None,
+                 prompt: Callable[[], str] = lambda: RECOVERY_PROMPT, **kwargs):
         super().__init__(**kwargs)
         self._telemetry = telemetry
         self._prompt = prompt
@@ -55,7 +57,7 @@ class NoTranscriptRecovery(FrameProcessor):
             if self._telemetry:
                 self._telemetry.count("no_transcript_recovery_prompts")
             logger.info("No transcript for a patient turn; asking the patient to repeat")
-            await self.push_frame(TTSSpeakFrame(self._prompt), FrameDirection.DOWNSTREAM)
+            await self.push_frame(TTSSpeakFrame(self._prompt()), FrameDirection.DOWNSTREAM)
 
     def observe(self, frame: Frame, now: float) -> bool:
         """Track the current user turn; True when it just ended with no transcript."""

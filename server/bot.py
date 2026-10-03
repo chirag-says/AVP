@@ -49,9 +49,11 @@ from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.workers.runner import WorkerRunner
 
+from intake.language_follow import LanguageState, ReplyLanguageFollower
+from intake.languages import ENGLISH, IntakeLanguage, resolve_language
 from intake.prompts import build_system_prompt
 from intake.reply_guard import ReplyGuard
-from intake.session import GREETING, IntakeSession, Persistence, transcript_from_context
+from intake.session import IntakeSession, Persistence, transcript_from_context
 from services.db import complete_session, create_session, list_sessions, save_session
 from voice.config import VoiceConfig
 from voice.echo_guard import BotSpeechTracker, EchoAwareVADUserTurnStartStrategy, EchoTranscriptFilter
@@ -91,11 +93,17 @@ def _sarvam_key() -> str:
     return key
 
 
-def _build_stt():
+def _build_stt(lang: IntakeLanguage):
     if STT_PROVIDER == "sarvam":
-        # Model, language, keyterms and Sarvam's server VAD profile come from
-        # VoiceConfig; see server/voice/stt.py for why each default was chosen.
-        return build_sarvam_stt(_sarvam_key(), VOICE)
+        # Model, keyterms and Sarvam's server VAD profile come from VoiceConfig;
+        # see server/voice/stt.py for why each default was chosen. English
+        # sessions keep SARVAM_STT_LANGUAGE; others auto-detect so a patient who
+        # switches language is still understood (STT_LANGUAGE_MODE=fixed locks it).
+        if lang is ENGLISH:
+            code = VOICE.stt_language
+        else:
+            code = "unknown" if VOICE.stt_language_mode == "auto" else lang.code
+        return build_sarvam_stt(_sarvam_key(), VOICE, code)
     # See the WHISPER_DEVICE note below: "auto" detects CUDA and then crashes on
     # Windows without the full Toolkit, so CPU stays the default here too.
     return WhisperSTTService(
@@ -105,7 +113,7 @@ def _build_stt():
     )
 
 
-def _build_tts():
+def _build_tts(lang: IntakeLanguage):
     if TTS_PROVIDER == "sarvam":
         # The WebSocket service (not SarvamHttpTTSService) — it's an
         # InterruptibleTTSService, which is what keeps barge-in working.
@@ -114,7 +122,7 @@ def _build_tts():
             settings=SarvamTTSService.Settings(
                 model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v3"),
                 voice=os.getenv("SARVAM_VOICE_ID", "priya"),
-                language=Language.EN_IN,
+                language=Language(lang.code),  # then follows each reply (language_follow.py)
                 pace=1.3,  # slightly faster speech (v3 range: 0.5–2.0)
             ),
         )
@@ -125,20 +133,20 @@ def _build_tts():
     )
 
 
-def _build_llm():
+def _build_llm(lang: IntakeLanguage):
     if LLM_PROVIDER == "sarvam":
         return SarvamLLMService(
             api_key=_sarvam_key(),
             settings=SarvamLLMService.Settings(
                 model=os.getenv("SARVAM_MODEL", "sarvam-30b"),
-                system_instruction=build_system_prompt(),
+                system_instruction=build_system_prompt(language=lang),
             ),
         )
     return GoogleLLMService(
         api_key=os.environ["GOOGLE_API_KEY"],
         settings=GoogleLLMService.Settings(
             model=os.getenv("GOOGLE_MODEL", "gemini-flash-lite-latest"),
-            system_instruction=build_system_prompt(),
+            system_instruction=build_system_prompt(language=lang),
         ),
     )
 
@@ -147,6 +155,16 @@ def _build_llm():
 async def get_records():
     """Receptionist view: recent intake sessions, most recent first."""
     return list_sessions()
+
+
+def _session_language(runner_args: RunnerArguments) -> IntakeLanguage:
+    """The language picked on screen, sent in the /start body; English if absent or unknown."""
+    body = runner_args.body if isinstance(runner_args.body, dict) else {}
+    lang = resolve_language(body.get("language"))
+    if lang is not ENGLISH and (STT_PROVIDER != "sarvam" or TTS_PROVIDER != "sarvam"):
+        logger.warning("Indian languages need Sarvam STT and TTS; this session runs in English")
+        return ENGLISH
+    return lang
 
 
 async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> None:
@@ -167,11 +185,14 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         logger.info(f"Intake session {session_id}")
 
     logger.info(f"Stack: stt={STT_PROVIDER} llm={LLM_PROVIDER} tts={TTS_PROVIDER}")
+    lang = _session_language(runner_args)
+    languages = LanguageState(lang)
+    logger.info(f"Session language: {lang.code}")
     logger.info(f"Voice: echo_guard={VOICE.echo_guard} headset_mode={VOICE.headset_mode} "
                 f"no_transcript_recovery={VOICE.no_transcript_recovery} keyterms={VOICE.stt_keyterms}")
-    stt = _build_stt()
-    tts = _build_tts()
-    llm = _build_llm()
+    stt = _build_stt(lang)
+    tts = _build_tts(lang)
+    llm = _build_llm(lang)
 
     async def send_to_client(message: dict):
         await worker.rtvi.send_server_message(message)
@@ -184,6 +205,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         persistence=Persistence(create_session, complete_session) if HAVE_SUPABASE else None,
         session_id=session_id,
         get_transcript=transcript,
+        language=languages,
     )
 
     telemetry = VoiceTelemetry(session_label=intake.session_id, scenario=VOICE.debug_scenario) if VOICE.telemetry else None
@@ -242,11 +264,15 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
             bot_speech, telemetry=telemetry, echo_rules=VOICE.echo_guard, require_vad=VOICE.headset_mode))
     if VOICE.no_transcript_recovery:
         # After the filter, so a dropped transcript does not count as patient text.
-        processors.append(NoTranscriptRecovery(telemetry=telemetry))
+        processors.append(NoTranscriptRecovery(telemetry=telemetry, prompt=lambda: languages.current.repeat))
     # ReplyGuard: if the patient is owed a reply and everything goes quiet (empty LLM
     # response, or a noise turn swallowed the follow-up), re-runs the LLM, then asks them to repeat.
-    reply_guard = ReplyGuard(context, is_open=lambda: intake.state == "open")
-    processors += [user_aggregator, llm, reply_guard, tts, transport.output(), assistant_aggregator]
+    reply_guard = ReplyGuard(context, is_open=lambda: intake.state == "open", prompt=lambda: languages.current.say_again)
+    processors += [user_aggregator, llm, reply_guard]
+    if TTS_PROVIDER == "sarvam":
+        # After everything that speaks (LLM replies, fixed lines), right before the TTS.
+        processors.append(ReplyLanguageFollower(languages))
+    processors += [tts, transport.output(), assistant_aggregator]
     pipeline = Pipeline(processors)
 
     if telemetry:
@@ -290,7 +316,7 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments) -> Non
         # A fixed greeting (added to the LLM context as the assistant's first
         # turn), so every patient starts the same way.
         intake.engine.mark_asked("personal.full_name")
-        await worker.queue_frames([TTSSpeakFrame(GREETING)])
+        await worker.queue_frames([TTSSpeakFrame(languages.start.greeting)])
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

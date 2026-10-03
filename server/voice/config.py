@@ -62,6 +62,12 @@ class VoiceConfig:
     # Sarvam STT. Defaults are the A/B winners, see server/voice_eval/TEST_PLAN.md.
     stt_model: str
     stt_language: str
+    # Sessions started in a language other than English: "auto" lets Sarvam
+    # detect the language per utterance, so a patient who switches language
+    # is still understood; "fixed" locks STT to the language picked on screen.
+    # English sessions always use stt_language (unchanged behavior) until the
+    # phase 2 accuracy check shows auto-detect is as good on English.
+    stt_language_mode: str
     stt_mode: str
     stt_keyterms: bool
     stt_keyterm_limit: int
@@ -84,6 +90,7 @@ class VoiceConfig:
             vad_stop_secs=_float("VAD_STOP_SECS", 0.2, lo=0.1, hi=2.0),
             stt_model=os.getenv("SARVAM_STT_MODEL", "saaras:v4"),
             stt_language=os.getenv("SARVAM_STT_LANGUAGE", "en-IN"),
+            stt_language_mode=mode if (mode := os.getenv("STT_LANGUAGE_MODE", "auto").strip().lower()) in ("auto", "fixed") else "auto",
             stt_mode=os.getenv("SARVAM_STT_MODE", "transcribe"),
             stt_keyterms=_flag("STT_KEYTERMS", False),
             stt_keyterm_limit=max(0, min(_int("STT_KEYTERM_LIMIT", 50), 50)),

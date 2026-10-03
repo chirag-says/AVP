@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import SiriOrb from "./SiriOrb";
+import type { UiText } from "./intake/languages";
 
 export type AudioLevels = { local: number; remote: number };
 export type OrbStatus = "idle" | "connecting" | "connected" | "error";
@@ -38,10 +39,12 @@ export default function VoiceOrb({
   status,
   levelsRef,
   onClick,
+  text,
 }: {
   status: OrbStatus;
   levelsRef: React.RefObject<AudioLevels>;
   onClick: () => void;
+  text: UiText; // the patient-facing status line, in the session's language
 }) {
   const [speaker, setSpeaker] = useState<Speaker>("idle");
   const shellRef = useRef<HTMLSpanElement | null>(null);
@@ -127,16 +130,16 @@ export default function VoiceOrb({
       </button>
       <p className="min-h-[1.2em] text-sm text-muted-foreground">
         {status === "connecting"
-          ? "Connecting…"
+          ? text.connecting
           : status === "connected"
             ? speaker === "bot"
-              ? "Speaking…"
+              ? text.speaking
               : speaker === "user"
-                ? "Listening…"
-                : "Go ahead"
+                ? text.listening
+                : text.goAhead
             : status === "error"
-              ? "Tap to try again"
-              : "Tap to start"}
+              ? text.tryAgain
+              : text.tapToStart}
       </p>
     </div>
   );

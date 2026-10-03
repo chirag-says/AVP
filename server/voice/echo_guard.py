@@ -75,7 +75,10 @@ BOT_WORDS_MEMORY_S = 20.0
 VAD_GATE_WINDOW_S = 2.5
 BOT_LIKE_RATIO = 0.6
 
-_WORD = re.compile(r"[a-z0-9']+")
+# English letters, plus the Indic blocks from Devanagari to Malayalam (their
+# vowel signs are part of the word) and the zero-width joiners Kannada and
+# Telugu spell with. The danda sentence marks (U+0964/5) are punctuation.
+_WORD = re.compile(r"[a-z0-9'\u0900-\u0963\u0966-\u0D7F\u200C\u200D]+")
 
 
 def _words(text: str) -> list[str]:

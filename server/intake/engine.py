@@ -264,6 +264,7 @@ class IntakeEngine:
         self.frozen = False
         self.status: dict[str, FieldStatus] = {f.key: FieldStatus.UNASKED for f in INTAKE_FIELDS}
         self.pending: dict[str, dict] = {}  # key -> {"value", "reason"} while NEEDS_CONFIRMATION
+        self.language = None  # the session's LanguageState (language_follow.py), if any
 
     # --- tools the LLM calls (via intake/session.py) -------------------------
 
@@ -398,12 +399,16 @@ class IntakeEngine:
     def flag(self, key: str, reason: str) -> None:
         self.flags.append({"field": key, "reason": reason})
 
-    def to_record(self, language: str = "en") -> dict:
+    def to_record(self) -> dict:
         now = datetime.now(timezone.utc).isoformat()
+        # Values are always English (prompts.py); these say what the patient heard.
+        start = self.language.start.code if self.language else "en-IN"
+        used = list(self.language.used) if self.language else [start]
         return {
             **json.loads(json.dumps(self.data)),  # detached copy
             "meta": {
-                "language": language,
+                "language": start,
+                "languages_used": used,
                 "completed": self.completed,
                 "flags": self.flags,
                 "captured_at": now,

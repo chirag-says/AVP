@@ -85,7 +85,9 @@ class KeytermSarvamSTTService(SarvamSTTService):
             await self._call_event_handler("on_connected")
 
 
-def build_sarvam_stt(api_key: str, config: VoiceConfig) -> SarvamSTTService:
+def build_sarvam_stt(api_key: str, config: VoiceConfig, language: str | None = None) -> SarvamSTTService:
+    """language: this session's STT language code, or "unknown" to auto-detect;
+    defaults to config.stt_language."""
     keyterms = []
     if config.stt_keyterms and config.stt_model == "saaras:v4" and config.stt_keyterm_limit:
         keyterms = load_keyterms(config.stt_keyterm_limit, config.stt_vocabulary_extra_file)
@@ -93,14 +95,15 @@ def build_sarvam_stt(api_key: str, config: VoiceConfig) -> SarvamSTTService:
         logger.warning(f"STT keyterms skipped: Sarvam accepts them only for saaras:v4 (model={config.stt_model})")
 
     vad = _PERMISSIVE_VAD if config.sarvam_vad_profile == "permissive" else {}
+    code = language or config.stt_language
     try:
-        language = Language(config.stt_language) if config.stt_language != "unknown" else None
+        language = Language(code) if code != "unknown" else None  # None: Sarvam auto-detects
     except ValueError:
-        logger.warning(f"Unknown SARVAM_STT_LANGUAGE={config.stt_language!r}; using en-IN")
-        language = Language.EN_IN
+        logger.warning(f"Unknown STT language {code!r}; using en-IN")
+        code, language = "en-IN", Language.EN_IN
 
     logger.info(
-        f"Sarvam STT: model={config.stt_model} language={config.stt_language} "
+        f"Sarvam STT: model={config.stt_model} language={code} "
         f"mode={config.stt_mode} keyterms={len(keyterms)} vad_profile={config.sarvam_vad_profile}"
     )
     return KeytermSarvamSTTService(

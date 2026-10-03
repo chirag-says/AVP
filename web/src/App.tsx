@@ -10,6 +10,8 @@ import { micProcessingFromEnv, prepareMicProcessing, reportMicProcessing } from 
 import ScenarioMarkers from "./audio/ScenarioMarkers";
 import { SCENARIO } from "./audio/scenario";
 import CompletionDialog from "./intake/CompletionDialog";
+import LanguagePicker from "./intake/LanguagePicker";
+import { DEFAULT_LANGUAGE, languageFor } from "./intake/languages";
 import { initialIntakeState, intakeReducer, isLocked, type Phase } from "./intake/intakeState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -42,6 +44,16 @@ export default function App() {
   // lives in one reducer so the next patient can replace it in one step.
   const [intake, dispatch] = useReducer(intakeReducer, undefined, () => initialIntakeState());
   const [audioBlocked, setAudioBlocked] = useState(false);
+  // The language the next session starts in (not patient data: it stays for
+  // the next patient until changed), and the one the current session used.
+  // The ref lets connect() read the latest choice without being re-created.
+  const [language, setLanguageState] = useState(DEFAULT_LANGUAGE);
+  const languageRef = useRef(DEFAULT_LANGUAGE);
+  const setLanguage = useCallback((code: string) => {
+    languageRef.current = code;
+    setLanguageState(code);
+  }, []);
+  const [sessionLanguage, setSessionLanguage] = useState(DEFAULT_LANGUAGE);
   const clientRef = useRef<PipecatClient | null>(null);
   // Generation of the live connection; callbacks from older ones are ignored.
   const genRef = useRef(0);
@@ -104,7 +116,9 @@ export default function App() {
 
   const connect = useCallback(async () => {
     const gen = ++genRef.current;
+    const code = languageRef.current;
     dispatch({ type: "CONNECT_START", newGen: gen });
+    setSessionLanguage(code);
     setAudioBlocked(false);
 
     const micProcessing = micProcessingFromEnv();
@@ -197,7 +211,8 @@ export default function App() {
     if (import.meta.env.DEV) (window as unknown as { __intakeClient?: PipecatClient }).__intakeClient = client;
 
     try {
-      await client.startBotAndConnect({ endpoint: START_ENDPOINT });
+      // The runner hands "body" to the bot (runner_args.body); unknown codes become English there.
+      await client.startBotAndConnect({ endpoint: START_ENDPOINT, requestData: { body: { language: code } } });
     } catch (err) {
       console.error(err);
       dispatch({ type: "CONNECT_FAILED", gen, message: err instanceof Error ? err.message : "Failed to connect" });
@@ -234,6 +249,9 @@ export default function App() {
 
   const { phase } = intake;
   const locked = isLocked(phase);
+  const idle = phase === "IDLE" || phase === "ERROR";
+  // Patient-facing text: the picked language before a session, the session's during and after it.
+  const ui = languageFor(idle ? language : sessionLanguage).ui;
 
   return (
     <div className="min-h-svh bg-background">
@@ -280,7 +298,7 @@ export default function App() {
         )}
         {(phase === "FINALIZING" || phase === "SAVING") && (
           <p role="status" className="mb-4 flex items-center justify-center gap-2 text-sm text-muted-foreground">
-            <LoaderCircle className="size-4 animate-spin" /> Saving your information…
+            <LoaderCircle className="size-4 animate-spin" /> {ui.saving}
           </p>
         )}
         {phase === "SAVE_FAILED" && (
@@ -314,8 +332,14 @@ export default function App() {
               levelsRef={levelsRef}
               // While saving or completed the session belongs to the save; the
               // orb can't end it or start a new one (use Start Next Patient).
-              onClick={phase === "IDLE" || phase === "ERROR" ? connect : locked ? () => {} : disconnect}
+              onClick={idle ? connect : locked ? () => {} : disconnect}
+              text={ui}
             />
+            {idle && (
+              <div className="mt-3">
+                <LanguagePicker value={language} onChange={setLanguage} />
+              </div>
+            )}
             <p className="mt-2 text-center text-xs text-muted-foreground">
               For best recognition, use a headset or keep the microphone close to the patient. A laptop
               microphone also picks up people talking nearby.
@@ -341,6 +365,9 @@ export default function App() {
         patientName={intake.patientName}
         onStartNext={startNextPatient}
         busy={phase !== "COMPLETED"}
+        text={languageFor(sessionLanguage).ui}
+        nextLanguage={language}
+        onNextLanguage={setLanguage}
       />
     </div>
   );
